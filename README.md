@@ -21,3 +21,4 @@ Flujos principales:
 - Reconocer: captura una imagen y la envía al servidor; si es reconocido, queda registrado en la base de datos (model/face_knn.db).
 - Ver registros: ver el historial de accesos.
 - Reiniciar registros / Eliminar TODO: operaciones administrativas.
+IMPORTANTE: Proyecto en mejoras
