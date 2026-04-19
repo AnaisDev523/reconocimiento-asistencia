@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>Registrar Usuario - Face KNN</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    :root{ --bg:#06070a; --card:#0d1116; --muted:#9aa6b2; --accent:#7c5cff; }
+    body{ background: linear-gradient(180deg,#05060a,#0a0f14); color:#e6eef6; font-family:Inter,Arial; }
+    .wrap{ max-width:900px; margin:36px auto; padding:18px; }
+    .panel{ background: linear-gradient(180deg, rgba(255,255,255,0.02), transparent);
+            border-radius:10px; padding:18px; border:1px solid rgba(255,255,255,0.03); }
+    .muted{ color:var(--muted); font-size:0.95rem; }
+    .video-card{ background:#07101a; border-radius:8px; padding:8px; display:flex; gap:12px; align-items:center; }
+    .btn-capture{ background:linear-gradient(90deg,var(--accent),#4a3bff); border:none; color:white; border-radius:8px; padding:8px 14px; }
+    .progress{ height:12px; border-radius:8px; background:#081018; overflow:hidden; }
+    .progress > div{ background:linear-gradient(90deg,#00d4ff,#7c5cff); }
+    .small-muted{ color:var(--muted); font-size:0.9rem; }
+
+    /* Borde dinámico de la cámara (registro) */
+    #video{
+      border:6px solid #ff4d4d; /* rojo inicial */
+      box-sizing:border-box;
+    }
+    #faceStatusReg{
+      font-size:0.85rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="panel">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <div>
+          <h3 class="mb-0">Registrar Usuario</h3>
+          <div class="muted">Ingrese el nombre y capture imágenes desde la cámara</div>
+        </div>
+        <div><a href="/" class="btn btn-sm btn-outline-light">Volver</a></div>
+      </div>
+
+      <form id="createForm" class="mb-3">
+        <div class="mb-2">
+          <label class="form-label">Nombre del usuario</label>
+          <input id="name" class="form-control" placeholder="Ej: Juan Pérez" required>
+        </div>
+        <button class="btn btn-capture" type="submit">Crear usuario y abrir cámara</button>
+      </form>
+
+      <div id="cameraArea" style="display:none;">
+        <div class="video-card mb-2">
+          <video id="video" width="420" height="320" autoplay playsinline style="border-radius:6px; background:#000;"></video>
+          <div style="flex:1">
+            <div class="mb-2"><strong id="statusText">Cámara inactiva</strong></div>
+            <div id="faceStatusReg" class="small-muted mb-2">✖ No se detecta bien el rostro. Ajusta tu posición.</div>
+
+            <div class="mb-2">
+              <button id="captureBtn" class="btn btn-capture me-2">Capturar imagen</button>
+              <button id="stopBtn" class="btn btn-outline-light">Detener cámara</button>
+            </div>
+
+            <!-- ✔ BOTÓN NUEVO (15 capturas automáticas, sin modificar diseño) -->
+            <button id="autoBtn" class="btn btn-warning mt-2">Tomar 15 capturas automáticas</button>
+            <p id="autoStatus" class="small-muted mt-1"></p>
+            <!-- FIN DEL BOTÓN NUEVO -->
+
+            <div class="small-muted mt-2">Imágenes capturadas:
+              <span id="count">0</span> / <span id="target">15</span>
+            </div>
+
+            <div class="progress mt-2">
+              <div id="bar" style="width:0%"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="muted small-muted">Consejo: buena iluminación y mirada frontal mejora la detección.</div>
+      </div>
+    </div>
+  </div>
+
+<script>
+const CAPTURE_TARGET = 15;
+document.getElementById('target').innerText = CAPTURE_TARGET;
+
+let userId = null;
+let stream = null;
+let captured = 0;
+let faceInterval = null;
+
+// Crear usuario
+document.getElementById('createForm').addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const name = document.getElementById('name').value.trim();
+  if(!name){ alert('Nombre requerido'); return; }
+
+  const form = new URLSearchParams();
+  form.append('name', name);
+
+  const res = await fetch('/register', {method:'POST', body: form});
+  const j = await res.json();
+
+  if(j.success){
+    userId = j.user_id;
+    await startCameraUI();
+  }else{
+    alert('Error: '+JSON.stringify(j));
+  }
+});
+
+async function startCameraUI(){
+  document.getElementById('createForm').style.display='none';
+  document.getElementById('cameraArea').style.display='block';
+  const video = document.getElementById('video');
+
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({video:true});
+    video.srcObject = stream;
+    document.getElementById('statusText').innerText = 'Cámara activa. Capture imágenes.';
+    startFaceMonitoringRegister(video);
+  }catch(e){
+    alert('No se pudo acceder a la cámara: '+e);
+  }
+}
+
+// Captura manual
+document.getElementById('captureBtn').addEventListener('click', async ()=>{
+  if(!userId) return alert('Usuario no creado');
+
+  const video = document.getElementById('video');
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth || 420;
+  canvas.height = video.videoHeight || 320;
+  canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+
+  const data = canvas.toDataURL('image/jpeg');
+
+  const form = new URLSearchParams();
+  form.append('user_id', userId);
+  form.append('image_data', data);
+
+  const res = await fetch('/upload_image', {method:'POST', body: form});
+  const j = await res.json();
+
+  if(j.success){
+    captured++;
+    document.getElementById('count').innerText = captured;
+
+    const pct = Math.min(100, Math.round((captured / CAPTURE_TARGET)*100));
+    document.getElementById('bar').style.width = pct+'%';
+
+    if(captured === CAPTURE_TARGET){
+      alert("Las 15 capturas se realizaron correctamente.");
+    }
+
+  } else {
+    alert('Error al subir: '+JSON.stringify(j));
+  }
+});
+
+// Detener cámara
+document.getElementById('stopBtn').addEventListener('click', ()=>{
+  if(stream){
+    stream.getTracks().forEach(t=>t.stop());
+    stream = null;
+  }
+  if(faceInterval){
+    clearInterval(faceInterval);
+    faceInterval = null;
+  }
+  document.getElementById('statusText').innerText = 'Cámara detenida';
+});
+
+// ----------------------------------------------------------
+// Monitor de rostro para cambiar color del borde (registro)
+// ----------------------------------------------------------
+function startFaceMonitoringRegister(video){
+  if(faceInterval){
+    clearInterval(faceInterval);
+  }
+  faceInterval = setInterval(async ()=>{
+    try{
+      if(!stream || video.readyState !== 4) return;
+
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth || 320;
+      canvas.height = video.videoHeight || 240;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video,0,0,canvas.width,canvas.height);
+
+      const dataUrl = canvas.toDataURL('image/jpeg');
+
+      const resp = await fetch('/detect_temp_face', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ image: dataUrl })
+      });
+      const data = await resp.json();
+
+      const faceLabel = document.getElementById('faceStatusReg');
+      if(!faceLabel) return;
+
+      if(data.status === 'good'){
+        video.style.borderColor = '#4dff88';
+        faceLabel.textContent = '✔ Rostro bien enfocado.';
+        faceLabel.style.color = '#4dff88';
+      }else if(data.status === 'weak'){
+        video.style.borderColor = '#ffcc00';
+        faceLabel.textContent = '⚠ Acércate un poco y mira de frente.';
+        faceLabel.style.color = '#ffcc00';
+      }else{
+        video.style.borderColor = '#ff4d4d';
+        faceLabel.textContent = '✖ No se detecta bien el rostro. Ajusta tu posición.';
+        faceLabel.style.color = '#ff6b6b';
+      }
+    }catch(e){
+      console.log('Error en monitor de rostro (registro):', e);
+    }
+  }, 600);
+}
+
+// ===========================================
+//    ✔ CAPTURAS AUTOMÁTICAS (NUEVO)
+// ===========================================
+document.getElementById("autoBtn").addEventListener("click", async () => {
+
+  if(!userId) return alert("Primero crea el usuario.");
+  if(!stream) return alert("Activa la cámara primero.");
+
+  const status = document.getElementById("autoStatus");
+  status.innerText = "Iniciando capturas automáticas...";
+
+  for (let i = 1; i <= 15; i++) {
+
+    const video = document.getElementById("video");
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth || 420;
+    canvas.height = video.videoHeight || 320;
+    canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    const dataUrl = canvas.toDataURL("image/jpeg");
+
+    const form = new URLSearchParams();
+    form.append("user_id", userId);
+    form.append("image_data", dataUrl);
+
+    const res = await fetch("/upload_image", { method: "POST", body: form });
+    const j = await res.json();
+
+    if (j.success) {
+      captured++;
+      document.getElementById("count").innerText = captured;
+
+      const pct = Math.min(100, Math.round((captured / CAPTURE_TARGET) * 100));
+      document.getElementById("bar").style.width = pct + "%";
+
+      status.innerText = `Captura ${i} de 15 completada.`;
+    } else {
+      status.innerText = "Error en una de las capturas.";
+      break;
+    }
+
+    await new Promise(res => setTimeout(res, 1000));
+  }
+
+  if (captured >= CAPTURE_TARGET) {
+    alert("✔ Se completaron las 15 capturas automáticas.");
+  }
+});
+</script>
+
+</body>
+</html>
